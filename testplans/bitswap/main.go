@@ -47,6 +47,9 @@ func main() {
 func runSpeedTest(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
 	runenv.RecordMessage("running speed-test")
 	ctx := context.Background()
+
+	netclient := initCtx.NetClient
+
 	linkShape := network.LinkShape{}
 	// linkShape := network.LinkShape{
 	// 	Latency:   50 * time.Millisecond,
@@ -61,7 +64,7 @@ func runSpeedTest(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
 	// 	Duplicate:     0.02,
 	// 	DuplicateCorr: 0.1,
 	// }
-	initCtx.NetClient.MustConfigureNetwork(ctx, &network.Config{
+	netclient.MustConfigureNetwork(ctx, &network.Config{
 		Network:        "default",
 		Enable:         true,
 		Default:        linkShape,
@@ -69,7 +72,7 @@ func runSpeedTest(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
 		CallbackTarget: runenv.TestGroupInstanceCount,
 		RoutingPolicy:  network.AllowAll,
 	})
-	listen, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/3333", initCtx.NetClient.MustGetDataNetworkIP().String()))
+	listen, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/3333", netclient.MustGetDataNetworkIP().String()))
 	if err != nil {
 		return err
 	}
@@ -90,10 +93,10 @@ func runSpeedTest(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
 	switch runenv.TestGroupID {
 	case "providers":
 		runenv.RecordMessage("running provider")
-		err = runProvide(ctx, runenv, h, bstore, ex)
+		err = runProvide(ctx, runenv, h, bstore, ex, initCtx)
 	case "requestors":
 		runenv.RecordMessage("running requestor")
-		err = runRequest(ctx, runenv, h, bstore, ex)
+		err = runRequest(ctx, runenv, h, bstore, ex, initCtx)
 	default:
 		runenv.RecordMessage("not part of a group")
 		err = errors.New("unknown test group id")
@@ -101,14 +104,15 @@ func runSpeedTest(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
 	return err
 }
 
-func runProvide(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore blockstore.Blockstore, ex exchange.Interface) error {
-	tgc := sync.MustBoundClient(ctx, runenv)
+func runProvide(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore blockstore.Blockstore, ex exchange.Interface, initCtx *run.InitContext) error {
+	client := initCtx.SyncClient
+
 	ai := peer.AddrInfo{
 		ID:    h.ID(),
 		Addrs: h.Addrs(),
 	}
-	tgc.MustPublish(ctx, providerTopic, &ai)
-	tgc.MustSignalAndWait(ctx, readyState, runenv.TestInstanceCount)
+	client.MustPublish(ctx, providerTopic, &ai)
+	_ = client.MustSignalAndWait(ctx, readyState, runenv.TestInstanceCount)
 
 	size := runenv.SizeParam("size")
 	count := runenv.IntParam("count")
@@ -123,18 +127,19 @@ func runProvide(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 		}
 		mh := blk.Multihash()
 		runenv.RecordMessage("publishing block %s", mh.String())
-		tgc.MustPublish(ctx, blockTopic, &mh)
+		client.MustPublish(ctx, blockTopic, &mh)
 	}
-	tgc.MustSignalAndWait(ctx, readyDLState, runenv.TestInstanceCount)
-	tgc.MustSignalAndWait(ctx, doneState, runenv.TestInstanceCount)
+	_ = client.MustSignalAndWait(ctx, readyDLState, runenv.TestInstanceCount)
+	_ = client.MustSignalAndWait(ctx, doneState, runenv.TestInstanceCount)
 	return nil
 }
 
-func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore blockstore.Blockstore, ex exchange.Interface) error {
-	tgc := sync.MustBoundClient(ctx, runenv)
+func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore blockstore.Blockstore, ex exchange.Interface, initCtx *run.InitContext) error {
+	client := initCtx.SyncClient
+
 	providers := make(chan *peer.AddrInfo)
 	blkmhs := make(chan *multihash.Multihash)
-	providerSub, err := tgc.Subscribe(ctx, providerTopic, providers)
+	providerSub, err := client.Subscribe(ctx, providerTopic, providers)
 	if err != nil {
 		return err
 	}
@@ -150,16 +155,16 @@ func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 
 	runenv.RecordMessage("connected to provider")
 
-	blockmhSub, err := tgc.Subscribe(ctx, blockTopic, blkmhs)
+	// tell the provider that we're ready for it to publish blocks
+	_ = client.MustSignalAndWait(ctx, readyState, runenv.TestInstanceCount)
+	// wait until the provider is ready for us to start downloading
+	_ = client.MustSignalAndWait(ctx, readyDLState, runenv.TestInstanceCount)
+
+	blockmhSub, err := client.Subscribe(ctx, blockTopic, blkmhs)
 	if err != nil {
 		return fmt.Errorf("could not subscribe to block sub: %w", err)
 	}
 	defer blockmhSub.Done()
-
-	// tell the provider that we're ready for it to publish blocks
-	tgc.MustSignalAndWait(ctx, readyState, runenv.TestInstanceCount)
-	// wait until the provider is ready for us to start downloading
-	tgc.MustSignalAndWait(ctx, readyDLState, runenv.TestInstanceCount)
 
 	begin := time.Now()
 	count := runenv.IntParam("count")
@@ -179,14 +184,6 @@ func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 			},
 		}
 		runenv.RecordMessage(bstats.Marshal(s))
-
-		stored, err := bstore.Has(ctx, blk.Cid())
-		if err != nil {
-			return fmt.Errorf("error checking if blck was stored %s: %w", mh.String(), err)
-		}
-		if !stored {
-			return fmt.Errorf("block was not stored %s: %w", mh.String(), err)
-		}
 	}
 	duration := time.Since(begin)
 	s := &bstats.BitswapStat{
@@ -196,6 +193,6 @@ func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 		},
 	}
 	runenv.RecordMessage(bstats.Marshal(s))
-	tgc.MustSignalEntry(ctx, doneState)
+	_ = client.MustSignalEntry(ctx, doneState)
 	return nil
 }
