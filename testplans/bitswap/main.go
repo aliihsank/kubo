@@ -117,7 +117,7 @@ func runProvide(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 	size := runenv.SizeParam("size")
 	count := runenv.IntParam("count")
 	for i := 0; i <= count; i++ {
-		runenv.RecordMessage("generating %d-sized random block", size)
+		runenv.RecordMessage("generating %d-sized random block[%d] ", size, i)
 		buf := make([]byte, size)
 		rand.Read(buf)
 		blk := block.NewBlock(buf)
@@ -143,17 +143,21 @@ func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 	if err != nil {
 		return err
 	}
-	ai := <-providers
-
-	runenv.RecordMessage("connecting  to provider provider: %s", fmt.Sprint(*ai))
+	
 	providerSub.Done()
 
-	err = h.Connect(ctx, *ai)
-	if err != nil {
-		return fmt.Errorf("could not connect to provider: %w", err)
-	}
+	providerCount := 2
+	for i := 0; i <= providerCount; i++ {
+		ai := <-providers
 
-	runenv.RecordMessage("connected to provider")
+		runenv.RecordMessage("connecting to provider provider[%d]: %s", i, fmt.Sprint(*ai))
+
+		err = h.Connect(ctx, *ai)
+		if err != nil {
+			return fmt.Errorf("could not connect to provider: %w", err)
+		}
+		runenv.RecordMessage("requester connected to provider[%d]", i)
+	}
 
 	// tell the provider that we're ready for it to publish blocks
 	_ = client.MustSignalAndWait(ctx, readyState, runenv.TestInstanceCount)
