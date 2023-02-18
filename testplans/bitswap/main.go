@@ -170,11 +170,11 @@ func runRequest(ctx context.Context, runenv *runtime.RunEnv, h host.Host, bstore
 	count := runenv.IntParam("count")
 	for i := 0; i <= count; i++ {
 		mh := <-blkmhs
-		runenv.RecordMessage("downloading block %s", mh.String())
+		runenv.RecordMessage("downloading block[%d] %s", i, mh.String())
 		dlBegin := time.Now()
 		blk, err := ex.GetBlock(ctx, cid.NewCidV0(*mh))
 		if err != nil {
-			return fmt.Errorf("could not download get block %s: %w", mh.String(), err)
+			return fmt.Errorf("could not download get block[%d] %s: %w", i, mh.String(), err)
 		}
 		dlDuration := time.Since(dlBegin)
 		s := &bstats.BitswapStat{
