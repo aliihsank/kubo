@@ -4,7 +4,7 @@
 [global]
         plan = "bitswap"
         case = "speed-test"
-        total_instances = 2
+        total_instances = 3
         builder = "docker:go"
         runner = "local:docker"
 
@@ -17,7 +17,7 @@
 
 [[groups]]
         id = "providers"
-        instances = { count = 1 }
+        instances = { count = 2 }
         [groups.resources]
                 memory = "4096Mi"
                 cpu = "1000m"
